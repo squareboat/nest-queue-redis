@@ -11,6 +11,7 @@ tsconfig.json
 cover.png
 .github
 CONTRIBUTING.MD
+CODE_OF_CONDUCT.md
 
 # misc
 .commitlintrc.json
