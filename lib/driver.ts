@@ -78,7 +78,7 @@ export class RedisQueueDriver implements QueueDriver {
   }
 
   async scheduledTask(options: Record<string, any>): Promise<void> {
-    const zrange: Function = promisify(this.client.zrevrange).bind(this.client);
+    const zrange: Function = promisify(this.client.zrange).bind(this.client);
     const [message, delay] = await zrange(
       this.getDelayedQueue(options.queue),
       0,
