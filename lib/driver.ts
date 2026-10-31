@@ -155,23 +155,36 @@ export class RedisQueueDriver implements QueueDriver {
   /**
    * Close the Redis connection. Called by nest-queue on `app.close()`.
    * Sends QUIT (pending replies are still delivered) and closes the socket if
-   * Redis does not answer within 1.5 s (e.g. while it is down).
+   * Redis does not answer within 1.5 s (e.g. while it is down). Commands that
+   * were waiting for Redis to come back are then rejected with
+   * "Connection is closed.".
    */
   async disconnect(): Promise<void> {
     this.closing = true;
-    if (this.client.status === "end") return;
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([
-        this.client.quit(),
-        new Promise((resolve) => (timer = setTimeout(resolve, QUIT_TIMEOUT))),
-      ]);
-    } catch {
-      // the connection is already closed or broken: disconnect() below
-    } finally {
-      clearTimeout(timer);
+    const client = this.client;
+    // a function, so TypeScript does not narrow the status across the awaits
+    const ended = (): boolean => client.status === "end";
+    if (ended()) return;
+    if (client.status === "ready") {
+      await settleWithin(client.quit(), QUIT_TIMEOUT);
+      if (ended()) return;
     }
-    this.client.disconnect();
+    client.disconnect();
+    if (ended()) return;
+
+    // A client that is waiting to reconnect stays "reconnecting" after
+    // disconnect(), and ioredis never settles the commands queued meanwhile.
+    // One last connection attempt (now marked as a manual close) ends it: the
+    // queued commands are rejected, or sent if Redis is back, then closed.
+    await settleWithin(
+      new Promise<void>((resolve) => {
+        client.once("end", resolve);
+        client.once("ready", () => client.disconnect());
+        client.connect().catch(() => {});
+      }),
+      QUIT_TIMEOUT
+    );
+    if (!ended()) client.disconnect();
   }
 
   getDelayedQueue(queue: string): string {
@@ -180,5 +193,18 @@ export class RedisQueueDriver implements QueueDriver {
 
   getQueue(queue: string): string {
     return `${this.queuePrefix}::${queue}`;
+  }
+}
+
+/** Wait for `promise` (ignoring its result or error), at most `ms` */
+async function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      promise.catch(() => {}),
+      new Promise((resolve) => (timer = setTimeout(resolve, ms))),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }
