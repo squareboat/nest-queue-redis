@@ -3,20 +3,23 @@ import {
   InternalMessage,
   validateSchema,
 } from "@squareboat/nest-queue-strategy";
-import { v4 } from "uuid";
-import * as redis from "redis";
+import { randomUUID } from "crypto";
+import { Redis, RedisOptions } from "ioredis";
 import { RedisJob } from "./job";
-import { promisify } from "util";
 import { schema } from "./schema";
+import { toClientOptions } from "./options";
 
 export class RedisQueueDriver implements QueueDriver {
-  private client: redis.RedisClient;
+  private client: Redis;
   private queuePrefix: string;
 
   constructor(private options: Record<string, any>) {
     validateSchema(this.options, schema);
     this.queuePrefix = "sqbnestqueue";
-    this.client = redis.createClient(options);
+    const { url, options: clientOptions } = toClientOptions(options);
+    this.client = url
+      ? new Redis(url, clientOptions)
+      : new Redis(clientOptions as RedisOptions);
   }
 
   async push(message: string, rawPayload: InternalMessage): Promise<void> {
@@ -25,8 +28,7 @@ export class RedisQueueDriver implements QueueDriver {
       return;
     }
 
-    const rpush: Function = promisify(this.client.rpush).bind(this.client);
-    await rpush(
+    await this.client.rpush(
       this.getQueue(`${rawPayload.queue}`),
       this.getProcessedMessage(message)
     );
@@ -34,8 +36,7 @@ export class RedisQueueDriver implements QueueDriver {
   }
 
   async pull(options: Record<string, any>): Promise<RedisJob | null> {
-    const lpop: Function = promisify(this.client.lpop).bind(this.client);
-    const data = await lpop(this.getQueue(options.queue));
+    const data = await this.client.lpop(this.getQueue(options.queue));
     return data ? new RedisJob({ message: data }) : null;
   }
 
@@ -44,15 +45,13 @@ export class RedisQueueDriver implements QueueDriver {
   }
 
   async purge(options: Record<string, any>): Promise<void> {
-    const del: Function = promisify(this.client.del).bind(this.client);
-    await del(this.getQueue(options.queue));
-    await del(this.getDelayedQueue(options.queue));
+    await this.client.del(this.getQueue(options.queue));
+    await this.client.del(this.getDelayedQueue(options.queue));
     return;
   }
 
   async count(options: Record<string, any>): Promise<number> {
-    const llen: Function = promisify(this.client.llen).bind(this.client);
-    const data = await llen(this.getQueue(options.queue));
+    const data = await this.client.llen(this.getQueue(options.queue));
     return data;
   }
 
@@ -60,10 +59,9 @@ export class RedisQueueDriver implements QueueDriver {
     message: string,
     rawPayload: InternalMessage
   ): Promise<void> {
-    const zadd: Function = promisify(this.client.zadd).bind(this.client);
     const date = new Date();
     date.setSeconds(date.getSeconds() + (rawPayload.delay || 0));
-    await zadd(
+    await this.client.zadd(
       this.getDelayedQueue(`${rawPayload.queue}`),
       date.getTime(),
       this.getProcessedMessage(message)
@@ -73,18 +71,19 @@ export class RedisQueueDriver implements QueueDriver {
 
   getProcessedMessage(message: string): string {
     const data = JSON.parse(message);
-    data.id = v4();
+    data.id = randomUUID();
     return JSON.stringify(data);
   }
 
   async scheduledTask(options: Record<string, any>): Promise<void> {
-    const zrange: Function = promisify(this.client.zrange).bind(this.client);
-    const [message, delay] = await zrange(
+    const reply = await this.client.zrange(
       this.getDelayedQueue(options.queue),
       0,
-      0,
-      "withscores"
+      "0",
+      "WITHSCORES"
     );
+    // RESP2 replies [member, score]; RESP3 replies [[member, score]]
+    const [message, delay] = (reply as unknown[]).flat() as [string, string];
 
     if (!message || !delay) return;
     const time = new Date().getTime();
@@ -92,8 +91,7 @@ export class RedisQueueDriver implements QueueDriver {
       const rawPayload = JSON.parse(message);
       rawPayload.delay = 0;
       this.push(message, rawPayload);
-      const zrem: Function = promisify(this.client.zrem).bind(this.client);
-      await zrem(this.getDelayedQueue(options.queue), message);
+      await this.client.zrem(this.getDelayedQueue(options.queue), message);
     }
   }
 
