@@ -1,9 +1,12 @@
 {
   "name": "@squareboat/nest-queue-redis",
-  "version": "0.0.4",
+  "version": "0.1.0",
   "description": "The redis queue package for your NestJS Applications",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "keywords": [
     "nestjs",
     "nestjs-queue",
@@ -17,8 +20,8 @@
   "bugs": {
     "url": "https://github.com/squareboat/nest-queue-redis/issues"
   },
-  "homepage": "https://squareboat.com/open-source/nest-queue-redis/",
-  "author": "Vinayak Sarawagi <vinayaksarawagi25@gmail.com>",
+  "homepage": "https://github.com/squareboat/nest-queue-redis#readme",
+  "author": "Squareboat <hi@squareboat.com>",
   "private": false,
   "license": "MIT",
   "scripts": {
@@ -30,17 +33,19 @@
     "prepublish:next": "npm run build",
     "publish:next": "npm publish --access public --tag next",
     "test:e2e": "jest --config ./tests/jest-e2e.json --runInBand",
-    "test:e2e:dev": "jest --config ./tests/jest-e2e.json --runInBand --watch"
+    "test:e2e:dev": "jest --config ./tests/jest-e2e.json --runInBand --watch",
+    "prepublishOnly": "npm run build"
   },
   "devDependencies": {
-    "@types/node": "^14.14.16",
-    "@types/redis": "^2.8.28",
-    "@types/uuid": "^8.3.0",
-    "typescript": "^4.1.3"
+    "@types/node": "^20.19.0",
+    "ajv": "^8.20.0",
+    "typescript": "^6.0.3"
   },
   "dependencies": {
-    "@squareboat/nest-queue-strategy": "0.0.9",
-    "redis": "^3.0.2",
-    "uuid": "^8.3.2"
+    "@squareboat/nest-queue-strategy": "^0.1.0",
+    "ioredis": "^6.0.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

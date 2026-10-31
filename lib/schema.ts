@@ -1,14 +1,6 @@
-import { JSONSchemaType } from "ajv";
+import type { SchemaObject } from "ajv";
 
-interface Options {
-  host: string;
-  port: number;
-  database: number;
-  queue: string;
-  url: string;
-}
-
-export const schema: JSONSchemaType<Options, true> = {
+export const schema: SchemaObject = {
   type: "object",
   properties: {
     host: { type: "string", nullable: true },
