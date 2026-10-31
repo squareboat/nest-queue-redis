@@ -12,17 +12,49 @@ import { toClientOptions } from "./options";
 /** How long disconnect() waits for QUIT before it closes the socket */
 const QUIT_TIMEOUT = 1500;
 
+/** Delayed jobs moved per script call; a tick repeats until none are due */
+const RELEASE_BATCH = 100;
+
+/**
+ * Move up to ARGV[2] due jobs (score <= ARGV[1]) from the delayed sorted set
+ * KEYS[1] to the end of the queue list KEYS[2], oldest first, in one atomic
+ * step: a job is never pushed twice, even with several workers.
+ */
+const RELEASE_DUE_SCRIPT = `
+local due = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, tonumber(ARGV[2]))
+if #due == 0 then return 0 end
+redis.call('ZREM', KEYS[1], unpack(due))
+redis.call('RPUSH', KEYS[2], unpack(due))
+return #due
+`;
+
+type ReleasingRedis = Redis & {
+  sqbQueueReleaseDue(
+    delayedKey: string,
+    queueKey: string,
+    now: number,
+    limit: number
+  ): Promise<number>;
+};
+
 export class RedisQueueDriver implements QueueDriver {
-  private client: Redis;
+  private client: ReleasingRedis;
   private queuePrefix: string;
+  private releasing = false;
+  private closing = false;
 
   constructor(private options: Record<string, any>) {
     validateSchema(this.options, schema);
     this.queuePrefix = "sqbnestqueue";
     const { url, options: clientOptions } = toClientOptions(options);
-    this.client = url
+    const client = url
       ? new Redis(url, clientOptions)
       : new Redis(clientOptions as RedisOptions);
+    client.defineCommand("sqbQueueReleaseDue", {
+      numberOfKeys: 2,
+      lua: RELEASE_DUE_SCRIPT,
+    });
+    this.client = client as ReleasingRedis;
   }
 
   async push(message: string, rawPayload: InternalMessage): Promise<void> {
@@ -78,23 +110,29 @@ export class RedisQueueDriver implements QueueDriver {
     return JSON.stringify(data);
   }
 
+  /**
+   * Move the delayed jobs that are due to the queue. Called by the nest-queue
+   * worker every `schedulerInterval` ms. Overlapping calls on one driver are
+   * skipped; jobs are claimed atomically, so several workers never push the
+   * same job twice.
+   */
   async scheduledTask(options: Record<string, any>): Promise<void> {
-    const reply = await this.client.zrange(
-      this.getDelayedQueue(options.queue),
-      0,
-      "0",
-      "WITHSCORES"
-    );
-    // RESP2 replies [member, score]; RESP3 replies [[member, score]]
-    const [message, delay] = (reply as unknown[]).flat() as [string, string];
-
-    if (!message || !delay) return;
-    const time = new Date().getTime();
-    if (+delay <= time) {
-      const rawPayload = JSON.parse(message);
-      rawPayload.delay = 0;
-      this.push(message, rawPayload);
-      await this.client.zrem(this.getDelayedQueue(options.queue), message);
+    if (this.releasing || this.closing) return;
+    this.releasing = true;
+    try {
+      const delayedKey = this.getDelayedQueue(options.queue);
+      const queueKey = this.getQueue(options.queue);
+      let moved: number;
+      do {
+        moved = await this.client.sqbQueueReleaseDue(
+          delayedKey,
+          queueKey,
+          Date.now(),
+          RELEASE_BATCH
+        );
+      } while (moved >= RELEASE_BATCH && !this.closing);
+    } finally {
+      this.releasing = false;
     }
   }
 
@@ -104,6 +142,7 @@ export class RedisQueueDriver implements QueueDriver {
    * Redis does not answer within 1.5 s (e.g. while it is down).
    */
   async disconnect(): Promise<void> {
+    this.closing = true;
     if (this.client.status === "end") return;
     let timer: NodeJS.Timeout | undefined;
     try {
