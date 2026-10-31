@@ -9,6 +9,9 @@ import { RedisJob } from "./job";
 import { schema } from "./schema";
 import { toClientOptions } from "./options";
 
+/** How long disconnect() waits for QUIT before it closes the socket */
+const QUIT_TIMEOUT = 1500;
+
 export class RedisQueueDriver implements QueueDriver {
   private client: Redis;
   private queuePrefix: string;
@@ -93,6 +96,27 @@ export class RedisQueueDriver implements QueueDriver {
       this.push(message, rawPayload);
       await this.client.zrem(this.getDelayedQueue(options.queue), message);
     }
+  }
+
+  /**
+   * Close the Redis connection. Called by nest-queue on `app.close()`.
+   * Sends QUIT (pending replies are still delivered) and closes the socket if
+   * Redis does not answer within 1.5 s (e.g. while it is down).
+   */
+  async disconnect(): Promise<void> {
+    if (this.client.status === "end") return;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        this.client.quit(),
+        new Promise((resolve) => (timer = setTimeout(resolve, QUIT_TIMEOUT))),
+      ]);
+    } catch {
+      // the connection is already closed or broken: disconnect() below
+    } finally {
+      clearTimeout(timer);
+    }
+    this.client.disconnect();
   }
 
   getDelayedQueue(queue: string): string {
