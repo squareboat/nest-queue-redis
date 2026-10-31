@@ -9,8 +9,12 @@ import { RedisOptions } from "ioredis";
  *   prefix -> keyPrefix, connect_timeout -> connectTimeout.
  * - `database` is not sent to the client: redis v3 never used it (only `db`),
  *   so jobs keep landing in the same Redis database as before.
- * - Defaults keep v3 behaviour: RESP2 protocol, and commands wait for a
- *   reconnect instead of failing after 20 retries.
+ * - Defaults: RESP2 protocol (what v3 spoke), and `maxRetriesPerRequest: null`,
+ *   so while Redis is down commands (push, pull, Dispatch()) wait until it is
+ *   back, without a time limit. This is NOT what v3 did: v3 crashed the
+ *   process on ECONNREFUSED. Pass `maxRetriesPerRequest` (a number) or
+ *   `commandTimeout` (ms) to make them fail instead, or
+ *   `enableOfflineQueue: false` to fail at once.
  * - Any other key is passed through, so ioredis options also work.
  */
 export function toClientOptions(input: Record<string, any>): {

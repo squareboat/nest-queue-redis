@@ -42,6 +42,7 @@ export class RedisQueueDriver implements QueueDriver {
   private queuePrefix: string;
   private releasing = false;
   private closing = false;
+  private connectionLost = false;
 
   constructor(private options: Record<string, any>) {
     validateSchema(this.options, schema);
@@ -53,6 +54,21 @@ export class RedisQueueDriver implements QueueDriver {
     client.defineCommand("sqbQueueReleaseDue", {
       numberOfKeys: 2,
       lua: RELEASE_DUE_SCRIPT,
+    });
+    // Without an 'error' listener ioredis prints "[ioredis] Unhandled error
+    // event" on every reconnect attempt. Log once per outage instead.
+    client.on("error", (error: Error) => {
+      if (this.connectionLost || this.closing) return;
+      this.connectionLost = true;
+      console.error(
+        `[nest-queue-redis] Redis connection error: ${error.message}. ` +
+          "Reconnecting (logged once until the connection is back)."
+      );
+    });
+    client.on("ready", () => {
+      if (!this.connectionLost) return;
+      this.connectionLost = false;
+      console.error("[nest-queue-redis] Redis connection restored.");
     });
     this.client = client as ReleasingRedis;
   }
